@@ -1,0 +1,1285 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BikeFlow — Trouve ta prochaine balade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700;900&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --green-deep: #1a3a2a;
+    --green-main: #2d6a4f;
+    --green-mid: #40916c;
+    --green-light: #74c69d;
+    --green-pale: #b7e4c7;
+    --green-wash: #d8f3dc;
+    --cream: #f8f4ee;
+    --sand: #e9e0d0;
+    --brown-soft: #a07850;
+    --text-dark: #1a2318;
+    --text-mid: #3d5540;
+    --text-light: #6b8a70;
+    --white: #ffffff;
+    --shadow: 0 4px 24px rgba(26,58,42,0.12);
+    --shadow-lg: 0 12px 48px rgba(26,58,42,0.18);
+    --radius: 16px;
+    --radius-sm: 10px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--cream);
+    color: var(--text-dark);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ===== HEADER ===== */
+  header {
+    background: var(--green-deep);
+    padding: 0 20px;
+    height: 58px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    z-index: 1000;
+    flex-shrink: 0;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.2);
+  }
+
+  .logo {
+    font-family: 'Fraunces', serif;
+    font-size: 22px;
+    font-weight: 900;
+    color: var(--white);
+    letter-spacing: -0.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .logo-icon { font-size: 20px; }
+
+  .search-bar {
+    flex: 1;
+    max-width: 400px;
+    position: relative;
+  }
+  .search-bar input {
+    width: 100%;
+    background: rgba(255,255,255,0.1);
+    border: 1.5px solid rgba(255,255,255,0.2);
+    border-radius: 30px;
+    padding: 8px 16px 8px 40px;
+    color: var(--white);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 14px;
+    outline: none;
+    transition: all 0.2s;
+  }
+  .search-bar input::placeholder { color: rgba(255,255,255,0.5); }
+  .search-bar input:focus { background: rgba(255,255,255,0.15); border-color: var(--green-light); }
+  .search-bar .search-icon {
+    position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+    color: rgba(255,255,255,0.5); font-size: 15px; pointer-events: none;
+  }
+  #searchSuggestions {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0; right: 0;
+    background: var(--white);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-lg);
+    z-index: 2000;
+    overflow: hidden;
+    display: none;
+  }
+  .suggestion-item {
+    padding: 10px 16px;
+    font-size: 13px;
+    color: var(--text-dark);
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .suggestion-item:hover { background: var(--green-wash); }
+
+  .header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+  .btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 14px;
+    border-radius: 30px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .btn-primary { background: var(--green-mid); color: white; }
+  .btn-primary:hover { background: var(--green-light); transform: translateY(-1px); }
+  .btn-ghost { background: rgba(255,255,255,0.1); color: white; border: 1.5px solid rgba(255,255,255,0.2); }
+  .btn-ghost:hover { background: rgba(255,255,255,0.2); }
+  .btn-green { background: var(--green-main); color: white; }
+  .btn-green:hover { background: var(--green-mid); }
+
+  /* ===== TABS ===== */
+  .tabs-bar {
+    background: var(--green-deep);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    display: flex;
+    padding: 0 20px;
+    flex-shrink: 0;
+  }
+  .tab {
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.5);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+  }
+  .tab.active { color: var(--green-pale); border-bottom-color: var(--green-light); }
+  .tab:hover:not(.active) { color: rgba(255,255,255,0.75); }
+
+  /* ===== MAIN LAYOUT ===== */
+  .app-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ===== LEFT PANEL ===== */
+  .left-panel {
+    width: 340px;
+    min-width: 300px;
+    background: var(--white);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-right: 1px solid var(--sand);
+    z-index: 100;
+    flex-shrink: 0;
+  }
+
+  .panel-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+  }
+  .panel-scroll::-webkit-scrollbar { width: 4px; }
+  .panel-scroll::-webkit-scrollbar-track { background: transparent; }
+  .panel-scroll::-webkit-scrollbar-thumb { background: var(--green-pale); border-radius: 2px; }
+
+  /* FILTERS */
+  .filter-section { margin-bottom: 20px; }
+  .filter-title {
+    font-family: 'Fraunces', serif;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-mid);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+  }
+
+  .chip-group { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1.5px solid var(--sand);
+    color: var(--text-mid);
+    background: transparent;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .chip:hover { border-color: var(--green-light); color: var(--green-main); }
+  .chip.active { background: var(--green-main); color: white; border-color: var(--green-main); }
+
+  /* SLIDER */
+  .slider-container { padding: 4px 2px; }
+  .slider-labels { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-light); margin-bottom: 8px; }
+  .slider-value { font-weight: 600; color: var(--green-main); font-size: 14px; text-align: center; margin-bottom: 8px; }
+  .range-row { display: flex; align-items: center; gap: 10px; }
+  input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--green-pale);
+    outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--green-main);
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(45,106,79,0.4);
+  }
+  .range-label { font-size: 11px; color: var(--text-light); white-space: nowrap; }
+
+  /* QUICK MOOD */
+  .mood-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .mood-card {
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    border: 1.5px solid var(--sand);
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: center;
+  }
+  .mood-card:hover { border-color: var(--green-mid); transform: translateY(-2px); box-shadow: var(--shadow); }
+  .mood-card.active { border-color: var(--green-main); background: var(--green-wash); }
+  .mood-emoji { font-size: 22px; display: block; margin-bottom: 4px; }
+  .mood-label { font-size: 11px; font-weight: 600; color: var(--text-mid); }
+
+  /* MAGIC BUTTON */
+  .magic-btn {
+    width: 100%;
+    padding: 14px;
+    background: linear-gradient(135deg, var(--green-main), var(--green-mid));
+    color: white;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-family: 'Fraunces', serif;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    margin-bottom: 16px;
+  }
+  .magic-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(45,106,79,0.35); }
+  .magic-btn:active { transform: translateY(0); }
+
+  /* ROUTE CARDS */
+  .routes-list { display: flex; flex-direction: column; gap: 10px; }
+  .route-card {
+    border: 1.5px solid var(--sand);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: var(--white);
+    position: relative;
+  }
+  .route-card:hover { border-color: var(--green-mid); box-shadow: var(--shadow); transform: translateY(-1px); }
+  .route-card.highlighted { border-color: var(--green-main); background: var(--green-wash); }
+  .route-card-top { display: flex; align-items: flex-start; gap: 10px; }
+  .route-thumb {
+    width: 60px; height: 50px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--green-wash);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+  }
+  .route-info { flex: 1; min-width: 0; }
+  .route-name { font-weight: 600; font-size: 13px; color: var(--text-dark); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .route-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+  .meta-tag {
+    font-size: 11px;
+    color: var(--text-light);
+    display: flex; align-items: center; gap: 3px;
+  }
+  .diff-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .diff-easy { background: #d8f3dc; color: #1b4332; }
+  .diff-medium { background: #fff3cd; color: #664d03; }
+  .diff-hard { background: #ffe0e0; color: #7d1111; }
+  .route-scores { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .score-pill {
+    padding: 3px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    background: var(--green-wash);
+    color: var(--green-deep);
+  }
+  .route-actions { margin-top: 10px; display: flex; gap: 6px; }
+  .btn-sm {
+    padding: 5px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.15s;
+  }
+  .btn-sm-green { background: var(--green-main); color: white; }
+  .btn-sm-green:hover { background: var(--green-mid); }
+  .btn-sm-outline { background: transparent; color: var(--green-main); border: 1.5px solid var(--green-main); }
+  .btn-sm-outline:hover { background: var(--green-wash); }
+
+  .no-routes { text-align: center; padding: 30px 16px; color: var(--text-light); font-size: 13px; }
+  .no-routes .icon { font-size: 36px; display: block; margin-bottom: 10px; }
+
+  /* ===== MAP ===== */
+  #map {
+    flex: 1;
+    z-index: 1;
+    position: relative;
+  }
+
+  /* MAP OVERLAYS */
+  .map-overlay-top {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 500;
+    display: flex;
+    gap: 8px;
+    pointer-events: all;
+  }
+  .map-pill {
+    background: white;
+    border-radius: 20px;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dark);
+    box-shadow: var(--shadow);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex; align-items: center; gap: 5px;
+    border: 1.5px solid transparent;
+  }
+  .map-pill:hover { border-color: var(--green-light); }
+  .map-pill.active { border-color: var(--green-main); background: var(--green-wash); color: var(--green-main); }
+
+  /* ===== PLAN MODE ===== */
+  #planView { display: none; }
+  #exploreView { display: block; }
+
+  .plan-panel { padding: 16px; }
+  .plan-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .step-num {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--green-main);
+    color: white;
+    font-size: 12px;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .step-content { flex: 1; }
+  .step-title { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: var(--text-dark); }
+
+  .plan-result {
+    background: var(--green-wash);
+    border: 1.5px solid var(--green-pale);
+    border-radius: var(--radius-sm);
+    padding: 14px;
+    margin-top: 12px;
+    display: none;
+  }
+  .plan-result-title { font-family: 'Fraunces', serif; font-size: 16px; font-weight: 700; color: var(--green-deep); margin-bottom: 10px; }
+  .plan-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+  .plan-stat { text-align: center; }
+  .plan-stat-val { font-size: 18px; font-weight: 700; color: var(--green-main); }
+  .plan-stat-label { font-size: 10px; color: var(--text-light); }
+  .gmaps-btn {
+    width: 100%;
+    padding: 10px;
+    background: #1a73e8;
+    color: white;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    transition: all 0.2s;
+  }
+  .gmaps-btn:hover { background: #1558b0; }
+
+  /* ===== MODAL ===== */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(26,58,42,0.5);
+    z-index: 3000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: white;
+    border-radius: var(--radius);
+    padding: 24px;
+    max-width: 480px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: var(--shadow-lg);
+    animation: modalIn 0.25s ease;
+  }
+  @keyframes modalIn { from { opacity: 0; transform: translateY(20px) scale(0.97); } to { opacity: 1; transform: none; } }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  .modal-title { font-family: 'Fraunces', serif; font-size: 20px; font-weight: 700; color: var(--green-deep); }
+  .modal-close { background: none; border: none; font-size: 20px; cursor: pointer; color: var(--text-light); padding: 4px; }
+  .modal-section { margin-bottom: 18px; }
+  .modal-section-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-light); margin-bottom: 8px; }
+  .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+  .stat-box { background: var(--cream); border-radius: var(--radius-sm); padding: 10px; text-align: center; }
+  .stat-box-val { font-size: 18px; font-weight: 700; color: var(--green-main); }
+  .stat-box-label { font-size: 10px; color: var(--text-light); }
+  .score-bar { margin-bottom: 8px; }
+  .score-bar-label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+  .score-bar-track { height: 6px; border-radius: 3px; background: var(--sand); overflow: hidden; }
+  .score-bar-fill { height: 100%; border-radius: 3px; background: var(--green-mid); transition: width 0.5s ease; }
+
+  /* ===== MOBILE ===== */
+  .mobile-bottom-bar {
+    display: none;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: white;
+    border-top: 1px solid var(--sand);
+    padding: 10px 16px 20px;
+    z-index: 1000;
+    gap: 6px;
+    flex-direction: column;
+  }
+  .mobile-toggle-btn {
+    width: 100%;
+    padding: 12px;
+    background: var(--green-wash);
+    border: 1.5px solid var(--green-pale);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--green-main);
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.2s;
+  }
+  .mobile-sheet {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: white;
+    border-radius: 20px 20px 0 0;
+    z-index: 2000;
+    max-height: 85vh;
+    overflow-y: auto;
+    padding: 16px;
+    padding-bottom: 100px;
+    display: none;
+    box-shadow: 0 -8px 32px rgba(0,0,0,0.15);
+    animation: slideUp 0.3s ease;
+  }
+  @keyframes slideUp { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .mobile-sheet.open { display: block; }
+  .sheet-drag { width: 40px; height: 4px; background: var(--sand); border-radius: 2px; margin: 0 auto 16px; }
+  .sheet-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.3);
+    z-index: 1999;
+    display: none;
+  }
+  .sheet-overlay.open { display: block; }
+
+  @media (max-width: 768px) {
+    body { overflow: hidden; }
+    .left-panel { display: none; }
+    .tabs-bar .tab span { display: none; }
+    .mobile-bottom-bar { display: flex; }
+    .logo span { display: none; }
+    #map { height: calc(100vh - 58px - 38px - 80px); }
+    .app-body { position: relative; }
+    .map-overlay-top { top: 8px; }
+    header { height: 54px; }
+  }
+
+  /* ===== LEAFLET CUSTOM ===== */
+  .leaflet-popup-content-wrapper {
+    border-radius: var(--radius-sm) !important;
+    box-shadow: var(--shadow-lg) !important;
+    border: 1.5px solid var(--green-pale) !important;
+  }
+  .leaflet-popup-content { font-family: 'DM Sans', sans-serif !important; }
+
+  .route-marker-icon {
+    background: var(--green-main);
+    border: 2px solid white;
+    border-radius: 50%;
+    width: 12px; height: 12px;
+  }
+
+  /* Loading spinner */
+  .spinner {
+    display: inline-block;
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .divider { height: 1px; background: var(--sand); margin: 16px 0; }
+
+  select {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1.5px solid var(--sand);
+    border-radius: var(--radius-sm);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    color: var(--text-dark);
+    background: white;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.2s;
+  }
+  select:focus { border-color: var(--green-mid); }
+
+  .results-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .results-count { font-size: 12px; color: var(--text-light); }
+
+  /* Plan mode map instruction */
+  .map-instruction {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--green-deep);
+    color: white;
+    padding: 10px 20px;
+    border-radius: 30px;
+    font-size: 13px;
+    font-weight: 500;
+    z-index: 500;
+    pointer-events: none;
+    white-space: nowrap;
+    display: none;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .tag-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .tag { font-size: 10px; padding: 2px 7px; border-radius: 8px; background: var(--sand); color: var(--text-mid); }
+
+  input[type=text], input[type=number] {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1.5px solid var(--sand);
+    border-radius: var(--radius-sm);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    color: var(--text-dark);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  input[type=text]:focus, input[type=number]:focus { border-color: var(--green-mid); }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">
+    <span class="logo-icon">🚴</span>
+    <span>BikeFlow</span>
+  </div>
+  <div class="search-bar">
+    <span class="search-icon">🔍</span>
+    <input type="text" id="cityInput" placeholder="Cherche une ville, un lieu…" autocomplete="off">
+    <div id="searchSuggestions"></div>
+  </div>
+  <div class="header-actions">
+    <button class="btn btn-primary" onclick="triggerMagic()">⚡ Balade !</button>
+    <button class="btn btn-ghost" onclick="toggleMode('plan')" id="planBtn" style="display:none">+ Créer</button>
+  </div>
+</header>
+
+<!-- TABS -->
+<div class="tabs-bar">
+  <div class="tab active" id="tab-explore" onclick="switchTab('explore')"><span>🗺️ </span>Explorer</div>
+  <div class="tab" id="tab-plan" onclick="switchTab('plan')"><span>✏️ </span>Créer un parcours</div>
+</div>
+
+<!-- APP BODY -->
+<div class="app-body">
+
+  <!-- LEFT PANEL -->
+  <div class="left-panel">
+    <!-- EXPLORE VIEW -->
+    <div id="exploreView" class="panel-scroll">
+
+      <!-- MOOD -->
+      <div class="filter-section">
+        <div class="filter-title">Ton mood 🌟</div>
+        <div class="mood-grid">
+          <div class="mood-card" data-mood="chill" onclick="selectMood(this)">
+            <span class="mood-emoji">🌿</span>
+            <div class="mood-label">Chill</div>
+          </div>
+          <div class="mood-card" data-mood="challenge" onclick="selectMood(this)">
+            <span class="mood-emoji">🔥</span>
+            <div class="mood-label">Challenge</div>
+          </div>
+          <div class="mood-card" data-mood="famille" onclick="selectMood(this)">
+            <span class="mood-emoji">👨‍👩‍👧</span>
+            <div class="mood-label">Famille</div>
+          </div>
+          <div class="mood-card" data-mood="nature" onclick="selectMood(this)">
+            <span class="mood-emoji">🌲</span>
+            <div class="mood-label">Nature</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- DIFFICULTE -->
+      <div class="filter-section">
+        <div class="filter-title">Difficulté</div>
+        <div class="chip-group" id="diffChips">
+          <div class="chip" data-val="easy" onclick="toggleChip(this,'diff')">😌 Facile</div>
+          <div class="chip" data-val="medium" onclick="toggleChip(this,'diff')">💪 Moyen</div>
+          <div class="chip" data-val="hard" onclick="toggleChip(this,'diff')">🔥 Difficile</div>
+        </div>
+      </div>
+
+      <!-- TYPE DE SORTIE -->
+      <div class="filter-section">
+        <div class="filter-title">Type de sortie</div>
+        <div class="chip-group" id="typeChips">
+          <div class="chip" data-val="famille" onclick="toggleChip(this,'type')">👨‍👩‍👧 Famille</div>
+          <div class="chip" data-val="couple" onclick="toggleChip(this,'type')">❤️ À deux</div>
+          <div class="chip" data-val="solo" onclick="toggleChip(this,'type')">🚴 Solo</div>
+        </div>
+      </div>
+
+      <!-- TERRAIN -->
+      <div class="filter-section">
+        <div class="filter-title">Type de chemin</div>
+        <div class="chip-group" id="terrainChips">
+          <div class="chip" data-val="paved" onclick="toggleChip(this,'terrain')">🛣️ Route</div>
+          <div class="chip" data-val="cycleway" onclick="toggleChip(this,'terrain')">🚲 Piste cyclable</div>
+          <div class="chip" data-val="gravel" onclick="toggleChip(this,'terrain')">🪨 Gravel</div>
+          <div class="chip" data-val="dirt" onclick="toggleChip(this,'terrain')">🌿 Terre</div>
+          <div class="chip" data-val="singletrack" onclick="toggleChip(this,'terrain')">🌲 Singletrack</div>
+          <div class="chip" data-val="voie_verte" onclick="toggleChip(this,'terrain')">🍃 Voie verte</div>
+          <div class="chip" data-val="agricole" onclick="toggleChip(this,'terrain')">🌾 Agricole</div>
+        </div>
+      </div>
+
+      <!-- DISTANCE SLIDER -->
+      <div class="filter-section">
+        <div class="filter-title">Distance</div>
+        <div class="slider-container">
+          <div class="slider-value" id="sliderVal">5 km → 50 km</div>
+          <div class="range-row">
+            <span class="range-label">5 km</span>
+            <input type="range" id="distMin" min="5" max="100" value="5" step="5" oninput="updateSlider()">
+            <span class="range-label">Min</span>
+          </div>
+          <div style="height:6px"></div>
+          <div class="range-row">
+            <span class="range-label">5 km</span>
+            <input type="range" id="distMax" min="5" max="200" value="50" step="5" oninput="updateSlider()">
+            <span class="range-label">Max</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <button class="magic-btn" onclick="applyFilters()">
+        🔍 Trouver des balades
+      </button>
+
+      <!-- ROUTES LIST -->
+      <div class="results-header">
+        <div class="filter-title" style="margin:0">Parcours</div>
+        <div class="results-count" id="resultsCount">— résultats</div>
+      </div>
+      <div class="routes-list" id="routesList">
+        <div class="no-routes">
+          <span class="icon">🗺️</span>
+          Cherche une ville ou clique sur "Trouver des balades" pour voir les parcours !
+        </div>
+      </div>
+    </div>
+
+    <!-- PLAN VIEW -->
+    <div id="planView" class="panel-scroll">
+      <div class="plan-panel">
+        <p style="font-size:13px;color:var(--text-light);margin-bottom:18px;line-height:1.5">Définis tes critères, on génère un parcours taillé pour toi ✂️</p>
+
+        <div class="plan-step">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <div class="step-title">Point de départ</div>
+            <input type="text" id="planStart" placeholder="Ex: Paris 11e, Versailles…">
+          </div>
+        </div>
+
+        <div class="plan-step">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <div class="step-title">Distance cible</div>
+            <div class="range-row" style="margin-top:4px">
+              <input type="range" id="planDist" min="5" max="150" value="30" step="5" oninput="document.getElementById('planDistVal').textContent = this.value + ' km'">
+            </div>
+            <div class="slider-value" id="planDistVal" style="margin-top:6px">30 km</div>
+          </div>
+        </div>
+
+        <div class="plan-step">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <div class="step-title">Difficulté</div>
+            <div class="chip-group" id="planDiffChips" style="margin-top:4px">
+              <div class="chip" data-val="easy" onclick="toggleChip(this,'planDiff')">😌 Facile</div>
+              <div class="chip" data-val="medium" onclick="toggleChip(this,'planDiff')">💪 Moyen</div>
+              <div class="chip" data-val="hard" onclick="toggleChip(this,'planDiff')">🔥 Difficile</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="plan-step">
+          <div class="step-num">4</div>
+          <div class="step-content">
+            <div class="step-title">Type de chemin préféré</div>
+            <select id="planTerrain">
+              <option value="">Peu importe</option>
+              <option value="cycleway">🚲 Piste cyclable</option>
+              <option value="voie_verte">🍃 Voie verte</option>
+              <option value="paved">🛣️ Route goudronnée</option>
+              <option value="gravel">🪨 Gravel</option>
+              <option value="dirt">🌿 Chemin de terre</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="plan-step">
+          <div class="step-num">5</div>
+          <div class="step-content">
+            <div class="step-title">Type de sortie</div>
+            <div class="chip-group" id="planTypeChips" style="margin-top:4px">
+              <div class="chip" data-val="famille" onclick="toggleChip(this,'planType')">👨‍👩‍👧 Famille</div>
+              <div class="chip" data-val="couple" onclick="toggleChip(this,'planType')">❤️ À deux</div>
+              <div class="chip" data-val="solo" onclick="toggleChip(this,'planType')">🚴 Solo sport</div>
+            </div>
+          </div>
+        </div>
+
+        <button class="magic-btn" onclick="generateRoute()" id="genBtn">
+          ✨ Générer mon parcours
+        </button>
+
+        <div class="plan-result" id="planResult">
+          <div class="plan-result-title" id="planResultTitle">Parcours généré 🎉</div>
+          <div class="plan-stats" id="planResultStats"></div>
+          <div style="margin-bottom:10px">
+            <div style="font-size:11px;font-weight:600;color:var(--text-light);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Score du parcours</div>
+            <div id="planResultScores"></div>
+          </div>
+          <button class="gmaps-btn" onclick="openGoogleMaps()">
+            🗺️ Ouvrir dans Google Maps
+          </button>
+          <div style="margin-top:6px;font-size:10px;color:var(--text-light);text-align:center">Tracé exporté vers Google Maps pour navigation 📱</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAP -->
+  <div style="flex:1;position:relative;overflow:hidden">
+    <div id="map"></div>
+    <div class="map-overlay-top" id="mapOverlayTop">
+      <div class="map-pill" id="pillRadius" onclick="togglePill(this,'radius')">📍 Rayon 20 km</div>
+      <div class="map-pill" id="pillFilter" onclick="applyFilters()">🔄 Actualiser</div>
+    </div>
+    <div class="map-instruction" id="mapInstruction">Cliquez sur la carte pour définir votre point de départ</div>
+  </div>
+
+</div>
+
+<!-- MOBILE BOTTOM BAR -->
+<div class="mobile-bottom-bar" id="mobileBar">
+  <button class="mobile-toggle-btn" onclick="openMobileSheet()">🔍 Filtres & Parcours</button>
+</div>
+
+<!-- MOBILE SHEET OVERLAY -->
+<div class="sheet-overlay" id="sheetOverlay" onclick="closeMobileSheet()"></div>
+<div class="mobile-sheet" id="mobileSheet">
+  <div class="sheet-drag"></div>
+  <!-- Content injected dynamically -->
+</div>
+
+<!-- ROUTE DETAIL MODAL -->
+<div class="modal-overlay" id="routeModal" onclick="closeModal(event)">
+  <div class="modal" id="routeModalContent">
+    <div class="modal-header">
+      <div class="modal-title" id="modalTitle">Détail du parcours</div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script>
+// ===== DATA =====
+const SAMPLE_ROUTES = [
+  { id:1, name:"Boucle de la Forêt de Fontainebleau", dist:42, elev:380, time:"2h45", diff:"medium", terrain:"gravel", type:["solo","couple"], lat:48.42, lng:2.70, tags:["nature","panorama","gravel"], emoji:"🌲", nature:8, effort:6, fun:8, desc:"Un grand classique autour de la forêt, idéal pour le gravel." },
+  { id:2, name:"Voie verte du Canal de l'Ourcq", dist:18, elev:30, time:"1h10", diff:"easy", terrain:"voie_verte", type:["famille","couple"], lat:48.90, lng:2.65, tags:["chill","famille","plat"], emoji:"🍃", nature:7, effort:2, fun:7, desc:"Chemin plat le long du canal, parfait avec les enfants." },
+  { id:3, name:"Tour du Lac de la Forêt d'Orient", dist:72, elev:120, time:"4h30", diff:"medium", terrain:"cycleway", type:["solo","couple"], lat:48.28, lng:4.37, tags:["lac","panorama","sportif"], emoji:"💧", nature:9, effort:5, fun:8, desc:"Magnifique tour d'un grand lac avec vue dégagée partout." },
+  { id:4, name:"Cols de Chevreuse", dist:55, elev:650, time:"3h30", diff:"hard", terrain:"paved", type:["solo"], lat:48.72, lng:1.98, tags:["sportif","dénivelé","route"], emoji:"⛰️", nature:7, effort:9, fun:8, desc:"Pour les sportifs, quelques belles côtes dans la vallée." },
+  { id:5, name:"Bords de Seine Nogent-Melun", dist:28, elev:85, time:"1h45", diff:"easy", terrain:"voie_verte", type:["famille","couple","solo"], lat:48.70, lng:2.65, tags:["seine","balade","chill"], emoji:"🌊", nature:8, effort:3, fun:7, desc:"Longez la Seine sur cette voie verte accessible à tous." },
+  { id:6, name:"Singletrack VTT Meudon", dist:15, elev:240, time:"1h20", diff:"hard", terrain:"singletrack", type:["solo"], lat:48.81, lng:2.22, tags:["technique","VTT","forêt"], emoji:"🏔️", nature:8, effort:8, fun:9, desc:"Sentiers techniques dans la forêt de Meudon près de Paris." },
+  { id:7, name:"Versailles - Rambouillet", dist:36, elev:200, time:"2h20", diff:"medium", terrain:"gravel", type:["couple","solo"], lat:48.70, lng:1.95, tags:["château","nature","mixte"], emoji:"🏰", nature:7, effort:5, fun:8, desc:"De Versailles à Rambouillet par les chemins forestiers." },
+  { id:8, name:"Petite Ceinture Verte Paris", dist:12, elev:40, time:"50min", diff:"easy", terrain:"cycleway", type:["famille","couple"], lat:48.87, lng:2.35, tags:["urbain","famille","piste"], emoji:"🏙️", nature:5, effort:2, fun:6, desc:"Tour de Paris sur pistes cyclables, idéal pour débuter." },
+  { id:9, name:"Chemin de la Marne", dist:48, elev:110, time:"3h00", diff:"medium", terrain:"voie_verte", type:["famille","couple","solo"], lat:48.85, lng:2.88, tags:["rivière","chill","plat"], emoji:"🌿", nature:8, effort:4, fun:7, desc:"Le long de la Marne sur voie verte, magnifique en automne." },
+  { id:10, name:"Gravel des Yvelines", dist:65, elev:480, time:"4h00", diff:"hard", terrain:"gravel", type:["solo","couple"], lat:48.75, lng:1.80, tags:["gravel","nature","technique"], emoji:"🪨", nature:9, effort:7, fun:9, desc:"Les chemins forestiers des Yvelines, gravel pure aventure." },
+];
+
+let map, routeMarkers = [], planMarker = null, planPolyline = null, activeFilters = { diff: [], type: [], terrain: [], minDist: 5, maxDist: 50, mood: null };
+let filteredRoutes = [...SAMPLE_ROUTES];
+let currentRoute = null;
+let currentPlan = null;
+let mapCenter = [48.8566, 2.3522];
+
+// ===== MAP INIT =====
+function initMap() {
+  map = L.map('map', { zoomControl: false }).setView(mapCenter, 11);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19
+  }).addTo(map);
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+  map.on('click', function(e) {
+    if (document.getElementById('tab-plan').classList.contains('active')) {
+      setPlanStartFromMap(e.latlng);
+    }
+  });
+
+  showRouteMarkers(SAMPLE_ROUTES);
+}
+
+function createRouteIcon(route) {
+  const colors = { easy:'#40916c', medium:'#e9a000', hard:'#c0392b' };
+  return L.divIcon({
+    className: '',
+    html: `<div style="background:${colors[route.diff]||'#40916c'};color:white;padding:4px 8px;border-radius:12px;font-size:11px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,0.2);white-space:nowrap;font-family:'DM Sans',sans-serif">${route.emoji} ${route.dist}km</div>`,
+    iconAnchor: [30, 16]
+  });
+}
+
+function showRouteMarkers(routes) {
+  routeMarkers.forEach(m => map.removeLayer(m));
+  routeMarkers = [];
+  routes.forEach(route => {
+    const marker = L.marker([route.lat, route.lng], { icon: createRouteIcon(route) }).addTo(map);
+    marker.on('click', () => openRouteDetail(route));
+    routeMarkers.push(marker);
+  });
+}
+
+// ===== GEOCODING =====
+let searchTimeout;
+document.getElementById('cityInput').addEventListener('input', function() {
+  clearTimeout(searchTimeout);
+  const val = this.value.trim();
+  if (val.length < 2) { hideSuggestions(); return; }
+  searchTimeout = setTimeout(() => geocodeSearch(val), 400);
+});
+
+document.getElementById('cityInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') { geocodeSearch(this.value, true); hideSuggestions(); }
+});
+
+async function geocodeSearch(query, fly = false) {
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&accept-language=fr`);
+    const data = await res.json();
+    if (fly && data.length > 0) {
+      flyToPlace(data[0]);
+    } else {
+      showSuggestions(data);
+    }
+  } catch(e) { console.log('geocode error', e); }
+}
+
+function showSuggestions(places) {
+  const box = document.getElementById('searchSuggestions');
+  if (!places.length) { box.style.display = 'none'; return; }
+  box.innerHTML = places.slice(0,4).map(p => 
+    `<div class="suggestion-item" onclick="flyToPlace(${JSON.stringify(p).replace(/"/g,'&quot;')})">📍 ${p.display_name.split(',').slice(0,3).join(', ')}</div>`
+  ).join('');
+  box.style.display = 'block';
+}
+
+function hideSuggestions() {
+  document.getElementById('searchSuggestions').style.display = 'none';
+}
+
+function flyToPlace(place) {
+  const lat = parseFloat(place.lat), lng = parseFloat(place.lon);
+  map.flyTo([lat, lng], 12, { duration: 1.2 });
+  mapCenter = [lat, lng];
+  document.getElementById('cityInput').value = place.display_name.split(',').slice(0,2).join(', ');
+  hideSuggestions();
+  setTimeout(() => applyFilters(), 1400);
+}
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.search-bar')) hideSuggestions();
+});
+
+// ===== FILTERS =====
+function toggleChip(el, group) {
+  const val = el.dataset.val;
+  el.classList.toggle('active');
+  const key = group === 'diff' ? 'diff' : group === 'type' ? 'type' : group === 'terrain' ? 'terrain' : null;
+  if (key) {
+    if (el.classList.contains('active')) {
+      if (!activeFilters[key]) activeFilters[key] = [];
+      activeFilters[key].push(val);
+    } else {
+      activeFilters[key] = (activeFilters[key]||[]).filter(v => v !== val);
+    }
+  }
+}
+
+function updateSlider() {
+  const min = parseInt(document.getElementById('distMin').value);
+  const max = parseInt(document.getElementById('distMax').value);
+  activeFilters.minDist = min;
+  activeFilters.maxDist = max;
+  document.getElementById('sliderVal').textContent = `${min} km → ${max} km`;
+}
+
+function selectMood(el) {
+  document.querySelectorAll('.mood-card').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  activeFilters.mood = el.dataset.mood;
+}
+
+function applyFilters() {
+  let routes = [...SAMPLE_ROUTES];
+  const center = map ? map.getCenter() : { lat: mapCenter[0], lng: mapCenter[1] };
+
+  // Filter by map view bounds roughly
+  const bounds = map ? map.getBounds() : null;
+  if (bounds) {
+    routes = routes.filter(r => bounds.contains([r.lat, r.lng]));
+  }
+
+  if (activeFilters.diff.length > 0) {
+    routes = routes.filter(r => activeFilters.diff.includes(r.diff));
+  }
+  if (activeFilters.type.length > 0) {
+    routes = routes.filter(r => r.type.some(t => activeFilters.type.includes(t)));
+  }
+  if (activeFilters.terrain.length > 0) {
+    routes = routes.filter(r => activeFilters.terrain.includes(r.terrain));
+  }
+  routes = routes.filter(r => r.dist >= activeFilters.minDist && r.dist <= activeFilters.maxDist);
+
+  // Mood filter
+  if (activeFilters.mood === 'chill') routes = routes.filter(r => r.diff === 'easy' || r.effort <= 4);
+  if (activeFilters.mood === 'challenge') routes = routes.filter(r => r.diff === 'hard' || r.effort >= 7);
+  if (activeFilters.mood === 'famille') routes = routes.filter(r => r.type.includes('famille'));
+  if (activeFilters.mood === 'nature') routes = routes.filter(r => r.nature >= 7);
+
+  filteredRoutes = routes;
+  renderRouteList(routes);
+  showRouteMarkers(routes);
+  document.getElementById('resultsCount').textContent = `${routes.length} résultat${routes.length !== 1 ? 's' : ''}`;
+}
+
+function renderRouteList(routes) {
+  const list = document.getElementById('routesList');
+  if (!routes.length) {
+    list.innerHTML = `<div class="no-routes"><span class="icon">🤷</span>Aucun parcours ne correspond à ces filtres.<br><br><small>Essaye d'élargir ta recherche !</small></div>`;
+    return;
+  }
+  list.innerHTML = routes.map(r => {
+    const diffClass = r.diff === 'easy' ? 'diff-easy' : r.diff === 'medium' ? 'diff-medium' : 'diff-hard';
+    const diffLabel = r.diff === 'easy' ? 'Facile' : r.diff === 'medium' ? 'Modéré' : 'Difficile';
+    return `<div class="route-card" id="card-${r.id}" onclick="openRouteDetail(${r.id})" onmouseenter="highlightMarker(${r.id})" onmouseleave="unhighlightMarker(${r.id})">
+      <div class="route-card-top">
+        <div class="route-thumb">${r.emoji}</div>
+        <div class="route-info">
+          <div class="route-name">${r.name}</div>
+          <div class="route-meta">
+            <span class="meta-tag">📏 ${r.dist} km</span>
+            <span class="meta-tag">⏱️ ${r.time}</span>
+            <span class="meta-tag">⬆️ ${r.elev}m</span>
+          </div>
+          <div style="margin-top:5px"><span class="diff-badge ${diffClass}">${diffLabel}</span></div>
+        </div>
+      </div>
+      <div class="tag-row">${r.tags.map(t => `<span class="tag">${t}</span>`).join('')}</div>
+      <div class="route-actions">
+        <button class="btn-sm btn-sm-green" onclick="event.stopPropagation();flyToRoute(${r.id})">🗺️ Voir</button>
+        <button class="btn-sm btn-sm-outline" onclick="event.stopPropagation();openRouteDetail(${r.id})">Détails</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function triggerMagic() {
+  // Auto-select chill or random
+  const moods = document.querySelectorAll('.mood-card');
+  if (!activeFilters.mood) {
+    const rand = moods[Math.floor(Math.random() * moods.length)];
+    selectMood(rand);
+  }
+  applyFilters();
+  if (filteredRoutes.length > 0) {
+    const r = filteredRoutes[Math.floor(Math.random() * filteredRoutes.length)];
+    map.flyTo([r.lat, r.lng], 13);
+    setTimeout(() => openRouteDetail(r), 1000);
+  }
+}
+
+// ===== ROUTE DETAIL =====
+function openRouteDetail(routeOrId) {
+  const r = typeof routeOrId === 'object' ? routeOrId : SAMPLE_ROUTES.find(x => x.id === routeOrId);
+  if (!r) return;
+  currentRoute = r;
+  const diffClass = r.diff === 'easy' ? 'diff-easy' : r.diff === 'medium' ? 'diff-medium' : 'diff-hard';
+  const diffLabel = r.diff === 'easy' ? 'Facile' : r.diff === 'medium' ? 'Modéré' : 'Difficile';
+  document.getElementById('modalTitle').textContent = r.name;
+  document.getElementById('modalBody').innerHTML = `
+    <div style="font-size:40px;text-align:center;margin-bottom:12px">${r.emoji}</div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="stat-box-val">${r.dist} km</div><div class="stat-box-label">Distance</div></div>
+      <div class="stat-box"><div class="stat-box-val">${r.elev}m</div><div class="stat-box-label">Dénivelé</div></div>
+      <div class="stat-box"><div class="stat-box-val">${r.time}</div><div class="stat-box-label">Durée est.</div></div>
+    </div>
+    <div style="margin-bottom:14px">
+      <span class="diff-badge ${diffClass}">${diffLabel}</span>
+      <span style="margin-left:8px;font-size:12px;color:var(--text-light)">${terrainLabel(r.terrain)}</span>
+    </div>
+    <p style="font-size:13px;color:var(--text-mid);margin-bottom:16px;line-height:1.5">${r.desc}</p>
+    <div class="modal-section">
+      <div class="modal-section-title">Score du parcours</div>
+      ${scoreBar('🌿 Nature', r.nature)}
+      ${scoreBar('🚴 Effort', r.effort)}
+      ${scoreBar('😍 Fun', r.fun)}
+    </div>
+    <div class="tag-row" style="margin-bottom:16px">${r.tags.map(t => `<span class="tag">${t}</span>`).join('')}</div>
+    <button class="gmaps-btn" onclick="openGoogleMapsRoute(${r.id})">🗺️ Naviguer avec Google Maps</button>
+    <div style="margin-top:6px;font-size:10px;color:var(--text-light);text-align:center">S'ouvre dans Google Maps pour navigation GPS 📱</div>
+  `;
+  document.getElementById('routeModal').classList.add('open');
+}
+
+function terrainLabel(t) {
+  const m = { paved:'Route goudronnée', cycleway:'Piste cyclable', gravel:'Gravel', dirt:'Chemin de terre', singletrack:'Singletrack', voie_verte:'Voie verte', agricole:'Piste agricole' };
+  return m[t] || t;
+}
+
+function scoreBar(label, val) {
+  return `<div class="score-bar">
+    <div class="score-bar-label"><span>${label}</span><span style="font-weight:700">${val}/10</span></div>
+    <div class="score-bar-track"><div class="score-bar-fill" style="width:${val*10}%"></div></div>
+  </div>`;
+}
+
+function closeModal(e) {
+  if (!e || e.target === document.getElementById('routeModal')) {
+    document.getElementById('routeModal').classList.remove('open');
+  }
+}
+
+function openGoogleMapsRoute(id) {
+  const r = SAMPLE_ROUTES.find(x => x.id === id);
+  if (!r) return;
+  const url = `https://www.google.com/maps/dir/?api=1&destination=${r.lat},${r.lng}&travelmode=bicycling`;
+  window.open(url, '_blank');
+}
+
+function flyToRoute(id) {
+  const r = SAMPLE_ROUTES.find(x => x.id === id);
+  if (!r) return;
+  map.flyTo([r.lat, r.lng], 13);
+}
+
+function highlightMarker(id) {
+  document.getElementById(`card-${id}`)?.classList.add('highlighted');
+}
+function unhighlightMarker(id) {
+  document.getElementById(`card-${id}`)?.classList.remove('highlighted');
+}
+
+// ===== TABS =====
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(`tab-${tab}`).classList.add('active');
+  if (tab === 'explore') {
+    document.getElementById('exploreView').style.display = 'block';
+    document.getElementById('planView').style.display = 'none';
+    document.getElementById('mapInstruction').style.display = 'none';
+    if (planPolyline) { map.removeLayer(planPolyline); planPolyline = null; }
+    if (planMarker) { map.removeLayer(planMarker); planMarker = null; }
+    showRouteMarkers(filteredRoutes);
+  } else {
+    document.getElementById('exploreView').style.display = 'none';
+    document.getElementById('planView').style.display = 'block';
+    document.getElementById('mapInstruction').style.display = 'block';
+    routeMarkers.forEach(m => map.removeLayer(m));
+    routeMarkers = [];
+  }
+}
+
+// ===== PLAN MODE =====
+function setPlanStartFromMap(latlng) {
+  if (planMarker) map.removeLayer(planMarker);
+  planMarker = L.marker([latlng.lat, latlng.lng], {
+    icon: L.divIcon({
+      className: '',
+      html: `<div style="background:#1a3a2a;color:white;padding:6px 10px;border-radius:12px;font-size:12px;font-weight:700;box-shadow:0 3px 10px rgba(0,0,0,0.3)">📍 Départ</div>`,
+      iconAnchor: [28, 16]
+    })
+  }).addTo(map);
+  document.getElementById('planStart').value = `${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}`;
+  document.getElementById('mapInstruction').style.display = 'none';
+  currentPlan = { lat: latlng.lat, lng: latlng.lng };
+}
+
+async function generateRoute() {
+  const btn = document.getElementById('genBtn');
+  const dist = parseInt(document.getElementById('planDist').value);
+  const terrain = document.getElementById('planTerrain').value;
+
+  let startLat, startLng;
+  if (currentPlan) { startLat = currentPlan.lat; startLng = currentPlan.lng; }
+  else { startLat = map.getCenter().lat; startLng = map.getCenter().lng; }
+
+  btn.innerHTML = `<span class="spinner"></span> Génération…`;
+  btn.disabled = true;
+
+  // Simulate route generation with ORS-like logic (offline simulation)
+  await new Promise(r => setTimeout(r, 1200));
+
+  // Generate a simple loop on the map
+  if (planPolyline) map.removeLayer(planPolyline);
+  const points = generateCircularRoute(startLat, startLng, dist);
+  planPolyline = L.polyline(points, { color: '#2d6a4f', weight: 4, opacity: 0.85 }).addTo(map);
+  map.fitBounds(planPolyline.getBounds(), { padding: [40, 40] });
+
+  // Show result
+  const elev = Math.round(dist * (terrain === 'gravel' ? 8 : terrain === 'singletrack' ? 15 : 4));
+  const time = formatTime(dist / 20); // ~20km/h avg
+  const result = document.getElementById('planResult');
+  document.getElementById('planResultTitle').textContent = `Parcours de ${dist} km 🎉`;
+  document.getElementById('planResultStats').innerHTML = `
+    <div class="plan-stat"><div class="plan-stat-val">${dist} km</div><div class="plan-stat-label">Distance</div></div>
+    <div class="plan-stat"><div class="plan-stat-val">${elev}m</div><div class="plan-stat-label">Dénivelé</div></div>
+    <div class="plan-stat"><div class="plan-stat-val">${time}</div><div class="plan-stat-label">Durée est.</div></div>
+    <div class="plan-stat"><div class="plan-stat-val">${terrain ? terrainLabel(terrain) : 'Mixte'}</div><div class="plan-stat-label">Terrain</div></div>
+  `;
+  const fun = Math.min(10, Math.round(6 + dist/20));
+  const nature = terrain === 'singletrack' || terrain === 'gravel' || terrain === 'voie_verte' ? 9 : 6;
+  document.getElementById('planResultScores').innerHTML = scoreBar('🌿 Nature', nature) + scoreBar('😍 Fun', fun);
+
+  currentPlan = { ...currentPlan, points, dist, elev };
+  result.style.display = 'block';
+  result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  btn.innerHTML = '✨ Régénérer';
+  btn.disabled = false;
+}
+
+function generateCircularRoute(lat, lng, distKm) {
+  // Approximate circular route
+  const radiusDeg = (distKm / 2) / 111; // rough conversion
+  const points = [];
+  const steps = 20;
+  for (let i = 0; i <= steps; i++) {
+    const angle = (2 * Math.PI * i) / steps;
+    const wobble = 0.3 + Math.random() * 0.4;
+    const r = radiusDeg * wobble;
+    points.push([lat + Math.sin(angle) * r * 0.8, lng + Math.cos(angle) * r]);
+  }
+  points.push(points[0]); // close loop
+  return points;
+}
+
+function formatTime(hours) {
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  return `${h}h${m.toString().padStart(2,'0')}`;
+}
+
+function openGoogleMaps() {
+  if (!currentPlan) return;
+  const url = `https://www.google.com/maps/dir/?api=1&origin=${currentPlan.lat},${currentPlan.lng}&destination=${currentPlan.lat},${currentPlan.lng}&travelmode=bicycling`;
+  window.open(url, '_blank');
+}
+
+function togglePill(el, type) {
+  el.classList.toggle('active');
+}
+
+// ===== MOBILE SHEET =====
+function openMobileSheet() {
+  // Clone panel content to mobile sheet
+  const isExplore = document.getElementById('tab-explore').classList.contains('active');
+  const source = isExplore ? document.getElementById('exploreView') : document.getElementById('planView');
+  const sheet = document.getElementById('mobileSheet');
+  sheet.querySelector('.sheet-drag') || sheet.insertAdjacentHTML('afterbegin','<div class="sheet-drag"></div>');
+  // Show content
+  document.getElementById('sheetOverlay').classList.add('open');
+  sheet.classList.add('open');
+}
+
+function closeMobileSheet() {
+  document.getElementById('sheetOverlay').classList.remove('open');
+  document.getElementById('mobileSheet').classList.remove('open');
+}
+
+// ===== INIT =====
+window.addEventListener('DOMContentLoaded', () => {
+  initMap();
+  renderRouteList(SAMPLE_ROUTES);
+  document.getElementById('resultsCount').textContent = `${SAMPLE_ROUTES.length} résultats`;
+
+  // Mobile: clone panels to sheet
+  const mobileSheet = document.getElementById('mobileSheet');
+  mobileSheet.innerHTML = '<div class="sheet-drag"></div>';
+  const exploreClone = document.getElementById('exploreView').cloneNode(true);
+  exploreClone.id = 'exploreViewMobile';
+  mobileSheet.appendChild(exploreClone);
+});
+</script>
+</body>
+</html>
