@@ -1196,34 +1196,42 @@ function setPlanStart(lat, lng, label='') {
 }
 
 // ── OVERPASS ──
-// Liste des serveurs Overpass (essayés dans l'ordre, fallback automatique)
+// Liste des serveurs Overpass (tentés en parallèle — on garde le plus rapide)
 const OVERPASS_ENDPOINTS = [
-  'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
   'https://overpass.openstreetmap.fr/api/interpreter'
 ];
 
-// Essaye une requête Overpass sur plusieurs serveurs avec fallback
-async function overpassFetch(query) {
-  let lastErr = null;
-  for (const url of OVERPASS_ENDPOINTS) {
-    try {
-      const ctrl = new AbortController();
-      const timeoutId = setTimeout(() => ctrl.abort(), 28000);
-      const res = await fetch(url, {
-        method: 'POST',
-        body: `data=${encodeURIComponent(query)}`,
-        signal: ctrl.signal
-      });
-      clearTimeout(timeoutId);
-      if (!res.ok) { lastErr = new Error(`${url} → HTTP ${res.status}`); continue; }
-      return await res.json();
-    } catch (e) {
-      lastErr = e;
-      console.log('Overpass fail:', url, e.message);
-    }
+// Lance la requête en parallèle sur tous les serveurs, garde la 1ère réponse valide
+async function overpassFetch(query, timeoutMs = 12000) {
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  const attempts = OVERPASS_ENDPOINTS.map(url =>
+    fetch(url, {
+      method: 'POST',
+      body: `data=${encodeURIComponent(query)}`,
+      signal: ctrl.signal
+    }).then(res => {
+      if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`);
+      return res.json().then(data => ({ data, url }));
+    })
+  );
+
+  try {
+    // Promise.any = première qui réussit gagne
+    const winner = await Promise.any(attempts);
+    clearTimeout(timeoutId);
+    ctrl.abort(); // annule les autres requêtes en cours pour libérer les serveurs
+    console.log('Overpass winner:', winner.url);
+    return winner.data;
+  } catch (e) {
+    clearTimeout(timeoutId);
+    // AggregateError contient toutes les erreurs
+    const msgs = e.errors ? e.errors.map(x => x.message).join(' | ') : e.message;
+    throw new Error(msgs);
   }
-  throw lastErr || new Error('Tous les serveurs Overpass ont échoué');
 }
 
 async function searchRoutes() {
@@ -1242,13 +1250,13 @@ async function searchRoutes() {
   const east  = b.getEast()  + (b.getEast()-b.getWest())*pad;
   const bb = `${south},${west},${north},${east}`;
 
-  // Requête ÉTAPE 1 : les relations d'itinéraires (beaucoup plus léger, rapide)
-  const qRelations = `[out:json][timeout:20];
+  // Requête ÉTAPE 1 : les relations d'itinéraires (léger, rapide)
+  const qRelations = `[out:json][timeout:10];
     (
       relation["route"~"^(bicycle|mtb)$"](${bb});
       relation["network"~"^(icn|ncn|rcn|lcn)$"](${bb});
     );
-    out body geom 80;`;
+    out body geom 50;`;
 
   try {
     const data = await overpassFetch(qRelations);
@@ -1261,12 +1269,12 @@ async function searchRoutes() {
       if (window._markSearched) window._markSearched();
     } else {
       // ÉTAPE 2 : compléter avec des ways cyclables (requête séparée, plus rapide)
-      const qWays = `[out:json][timeout:20];
+      const qWays = `[out:json][timeout:10];
         (
           way["highway"="cycleway"](${bb});
           way["highway"~"^(path|track)$"]["bicycle"~"^(yes|designated)$"](${bb});
         );
-        out body geom 60;`;
+        out body geom 40;`;
       try {
         const data2 = await overpassFetch(qWays);
         hideLoader();
