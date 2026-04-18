@@ -491,6 +491,22 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 }
 @keyframes hintPulse { 0%,100%{box-shadow:var(--shadow-lg)} 50%{box-shadow:0 8px 40px rgba(45,74,34,0.4)} }
 
+/* "Rechercher dans cette zone" flottant — style Google Maps */
+#searchArea {
+  position: absolute; top: 20px; left: 50%; transform: translateX(-50%) translateY(-10px);
+  background: var(--white); color: var(--forest);
+  padding: 10px 20px; border-radius: var(--r-full);
+  font-size: 13px; font-weight: 700; z-index: 400;
+  box-shadow: var(--shadow-lg); cursor: pointer;
+  border: 1.5px solid var(--forest);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease, background 0.15s ease;
+  white-space: nowrap;
+}
+#searchArea.visible { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+#searchArea:hover { background: var(--forest); color: var(--white); }
+#searchArea.loading { pointer-events: none; opacity: 0.85; }
+
 /* ── PLAN PANEL ── */
 #planSidebar {
   width: var(--sidebar-w); min-width: var(--sidebar-w);
@@ -955,6 +971,7 @@ select.plan-input option { background: var(--white); }
 
     <!-- Map hint for plan mode -->
     <div id="mapHint">📍 Cliquez sur la carte pour choisir votre départ</div>
+    <div id="searchArea" onclick="searchRoutes()">🔍 Rechercher dans cette zone</div>
   </div>
 
 </div>
@@ -1017,18 +1034,22 @@ function initMap() {
     preferCanvas: true
   });
 
-  // Stadia Outdoors tile (warm, Komoot-like)
-  L.tileLayer('https://tiles.stadiamaps.com/tiles/outdoors/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://stadiamaps.com/">Stadia</a>, &copy; <a href="https://www.openstreetmap.org/">OSM</a>',
-    maxZoom: 20
-  }).addTo(map);
+  // CyclOSM tiles — specifically designed for cycling (shows bike lanes, greenways, etc.)
+  const cyclosmLayer = L.tileLayer('https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | Tiles style by <a href="https://www.cyclosm.org">CyclOSM</a>',
+    maxZoom: 20,
+    subdomains: 'abc'
+  });
+  cyclosmLayer.addTo(map);
 
-  // Fallback to OSM if Stadia fails
-  map.on('tileerror', function() {
+  // Fallback to standard OSM if CyclOSM fails
+  cyclosmLayer.on('tileerror', function() {
     if (!map._fallbackApplied) {
       map._fallbackApplied = true;
+      map.removeLayer(cyclosmLayer);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution:'© OpenStreetMap', maxZoom:19
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19
       }).addTo(map);
     }
   });
@@ -1036,6 +1057,42 @@ function initMap() {
   map.on('click', e => {
     if (currentTab === 'plan') setPlanStart(e.latlng.lat, e.latlng.lng);
   });
+
+  // ── Auto-search UX : bouton "Rechercher dans cette zone" ──
+  // Apparaît quand on bouge la carte (zoom suffisant) et qu'on est sur l'onglet Itinéraires
+  let lastSearchCenter = null;
+  let lastSearchZoom = null;
+  const MIN_ZOOM_SEARCH = 10;
+  const MIN_MOVE_KM = 2; // seuil avant de proposer une nouvelle recherche
+
+  function updateSearchAreaBtn() {
+    const btn = document.getElementById('searchArea');
+    if (!btn) return;
+    // Masquer si on n'est pas sur l'onglet itinéraires
+    if (currentTab !== 'explore') { btn.classList.remove('visible'); return; }
+    const z = map.getZoom();
+    if (z < MIN_ZOOM_SEARCH) { btn.classList.remove('visible'); return; }
+    // Toujours visible si aucune recherche n'a encore été faite
+    if (!lastSearchCenter) { btn.classList.add('visible'); return; }
+    const c = map.getCenter();
+    const movedKm = haversine({lat:lastSearchCenter.lat, lon:lastSearchCenter.lng}, {lat:c.lat, lon:c.lng});
+    const zoomChanged = Math.abs(z - lastSearchZoom) >= 1;
+    if (movedKm >= MIN_MOVE_KM || zoomChanged) btn.classList.add('visible');
+    else btn.classList.remove('visible');
+  }
+
+  map.on('moveend zoomend', updateSearchAreaBtn);
+
+  // Exposer pour que searchRoutes puisse mettre à jour après succès
+  window._markSearched = function() {
+    lastSearchCenter = map.getCenter();
+    lastSearchZoom = map.getZoom();
+    const btn = document.getElementById('searchArea');
+    if (btn) btn.classList.remove('visible');
+  };
+
+  // Afficher le bouton au démarrage si zoom suffisant
+  setTimeout(updateSearchAreaBtn, 500);
 }
 
 // ── GEOCODE ──
@@ -1145,21 +1202,33 @@ async function searchRoutes() {
   showLoader('Interrogation OpenStreetMap…');
 
   const b = map.getBounds();
-  const bb = `${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()}`;
+  // Élargir légèrement la bounding box pour attraper les parcours qui débordent
+  const pad = 0.15;
+  const south = b.getSouth() - (b.getNorth()-b.getSouth())*pad;
+  const north = b.getNorth() + (b.getNorth()-b.getSouth())*pad;
+  const west  = b.getWest()  - (b.getEast()-b.getWest())*pad;
+  const east  = b.getEast()  + (b.getEast()-b.getWest())*pad;
+  const bb = `${south},${west},${north},${east}`;
 
-  const q = `[out:json][timeout:25];
+  // Requête élargie : on capture TOUS les types de réseaux cyclables
+  // + relations route=bicycle / route=mtb
+  // + ways cycleway / path avec bicycle=yes
+  const q = `[out:json][timeout:30];
     (
-      relation["route"="bicycle"](${bb});
+      relation["route"~"^(bicycle|mtb)$"](${bb});
+      relation["network"~"^(icn|ncn|rcn|lcn)$"](${bb});
       way["highway"="cycleway"](${bb});
-      way["highway"="path"]["bicycle"!="no"](${bb});
+      way["highway"="path"]["bicycle"~"^(yes|designated)$"](${bb});
+      way["highway"="track"]["bicycle"~"^(yes|designated)$"](${bb});
     );
-    out body center 50;`;
+    out body geom 150;`;
 
   try {
     const res = await fetch('https://overpass-api.de/api/interpreter', { method:'POST', body:`data=${encodeURIComponent(q)}` });
     const data = await res.json();
     hideLoader();
     processOSM(data.elements);
+    if (window._markSearched) window._markSearched();
   } catch(e) {
     hideLoader();
     toast('⚠️ Overpass indisponible — données de démonstration');
@@ -1168,54 +1237,145 @@ async function searchRoutes() {
   btn.disabled = false; btn.textContent = '🔍 Chercher des parcours';
 }
 
+// Calcule la distance d'une relation à partir de sa géométrie (en km)
+function computeRelationDistance(rel) {
+  if (!rel.members) return null;
+  let total = 0;
+  for (const m of rel.members) {
+    if (m.type !== 'way' || !m.geometry || m.geometry.length < 2) continue;
+    for (let i = 1; i < m.geometry.length; i++) {
+      total += haversine(m.geometry[i-1], m.geometry[i]);
+    }
+  }
+  return total > 0 ? total : null;
+}
+
+// Calcule la distance d'un way (en km)
+function computeWayDistance(w) {
+  if (!w.geometry || w.geometry.length < 2) return null;
+  let total = 0;
+  for (let i = 1; i < w.geometry.length; i++) {
+    total += haversine(w.geometry[i-1], w.geometry[i]);
+  }
+  return total > 0 ? total : null;
+}
+
+// Distance haversine entre deux points {lat, lon} en km
+function haversine(a, b) {
+  const R = 6371;
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLon = (b.lon - a.lon) * Math.PI / 180;
+  const lat1 = a.lat * Math.PI / 180;
+  const lat2 = b.lat * Math.PI / 180;
+  const h = Math.sin(dLat/2)**2 + Math.sin(dLon/2)**2 * Math.cos(lat1) * Math.cos(lat2);
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Récupère le centre approximatif d'une relation
+function relationCenter(rel) {
+  if (!rel.members) return null;
+  let lat = 0, lon = 0, n = 0;
+  for (const m of rel.members) {
+    if (m.type !== 'way' || !m.geometry) continue;
+    for (const p of m.geometry) { lat += p.lat; lon += p.lon; n++; }
+  }
+  return n ? { lat: lat/n, lon: lon/n } : null;
+}
+
 function processOSM(els) {
   clearMarkers();
   osmRoutes = [];
   const mn = filters.minDist, mx = filters.maxDist;
-  const rels = els.filter(e => e.type==='relation');
-  const ways = els.filter(e => e.type==='way' && e.center);
+  const rels = els.filter(e => e.type === 'relation');
+  const ways = els.filter(e => e.type === 'way');
+  const seen = new Set(); // évite les doublons par nom
 
-  rels.slice(0, 30).forEach(rel => {
+  // 1) Traite les relations (itinéraires cyclables officiels)
+  rels.forEach(rel => {
     const t = rel.tags || {};
-    const dist = parseFloat(t.distance) || (8 + Math.floor(Math.random()*45));
+    // Distance : priorité au tag, sinon calcul géométrique, sinon on skip
+    let dist = parseFloat(t.distance);
+    if (!dist || isNaN(dist)) dist = computeRelationDistance(rel);
+    if (!dist) return; // pas de distance fiable → on jette
+    dist = Math.round(dist);
     if (dist < mn || dist > mx) return;
-    const diff = dist < 20 ? 'easy' : dist < 60 ? 'medium' : 'hard';
-    if (filters.diff.length && !filters.diff.includes(diff)) return;
-    const c2 = rel.center || { lat: center[0], lon: center[1] };
-    const photoIdx = Math.floor(Math.random() * PHOTOS.length);
+
+    const name = t.name || t['name:fr'] || t.ref || `Itinéraire vélo ${dist}km`;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    const c = relationCenter(rel) || { lat: center[0], lon: center[1] };
+    const diff = dist < 20 ? 'easy' : dist < 50 ? 'medium' : 'hard';
+    const photoIdx = Math.abs(rel.id) % PHOTOS.length;
+
+    // Extraire la géométrie sous forme de tableau [lat,lng] pour dessin rapide
+    const geomLL = extractRelationGeom(rel);
 
     osmRoutes.push({
-      id: rel.id, name: t.name || t['name:fr'] || `Parcours ${Math.round(dist)}km`,
-      dist: Math.round(dist), elev: Math.round(dist * 6),
-      time: fmtTime(dist / 18), diff, photo: PHOTOS[photoIdx],
-      terrain: getTerrain(t), type: getType(diff),
-      lat: c2.lat || center[0], lng: c2.lon || center[1],
-      tags: getTags(t, diff), emoji: getEmoji(diff),
+      id: rel.id,
+      name,
+      dist,
+      elev: Math.round(dist * 6),
+      time: fmtTime(dist / 18),
+      diff,
+      photo: PHOTOS[photoIdx],
+      terrain: getTerrain(t),
+      type: getType(diff),
+      lat: c.lat, lng: c.lon,
+      tags: getTags(t, diff),
+      emoji: getEmoji(diff),
       nature: 7 + Math.floor(Math.random()*3),
       effort: diff==='easy' ? 2+~~(Math.random()*3) : diff==='medium' ? 4+~~(Math.random()*4) : 7+~~(Math.random()*3),
       fun: 6 + Math.floor(Math.random()*4),
-      desc: buildDesc(t, Math.round(dist), diff),
-      source: 'osm', osmId: rel.id
+      desc: buildDesc(t, dist, diff),
+      source: 'osm',
+      osmId: rel.id,
+      geom: geomLL // géométrie en cache pour dessin rapide
     });
   });
 
-  if (osmRoutes.length < 4) {
-    ways.slice(0, 12).forEach((w, i) => {
+  // 2) Si peu de relations, on complète avec des ways cyclables intéressants
+  if (osmRoutes.length < 8) {
+    const scoredWays = ways
+      .map(w => ({ w, d: computeWayDistance(w) }))
+      .filter(x => x.d && x.d >= mn && x.d <= mx)
+      .sort((a, b) => b.d - a.d); // les plus longs d'abord
+
+    scoredWays.slice(0, 20).forEach((x, i) => {
+      const { w, d } = x;
       const t = w.tags || {};
-      const dist = 6 + Math.floor(Math.random()*30);
-      if (dist < mn || dist > mx) return;
+      const dist = Math.round(d);
+      const name = t.name || t.ref || `Piste cyclable ${i+1}`;
+      const key = name.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+
       const diff = dist < 15 ? 'easy' : dist < 35 ? 'medium' : 'hard';
+      const mid = w.geometry[Math.floor(w.geometry.length/2)];
+      const geomLL = w.geometry ? w.geometry.map(p => [p.lat, p.lon]) : null;
+
       osmRoutes.push({
-        id: w.id + 100000, name: t.name || `Piste cyclable ${i+1}`,
-        dist, elev: ~~(dist*5), time: fmtTime(dist/18), diff,
-        photo: PHOTOS[(i+3) % PHOTOS.length],
-        terrain: getTerrain(t), type: getType(diff),
-        lat: w.center.lat, lng: w.center.lon,
-        tags: [], emoji: '🚲',
-        nature: 7, effort: 3, fun: 7,
-        desc: 'Chemin cyclable OpenStreetMap.',
-        source: 'osm'
+        id: w.id + 100000000,
+        name,
+        dist,
+        elev: Math.round(dist * 5),
+        time: fmtTime(dist / 18),
+        diff,
+        photo: PHOTOS[(i + 3) % PHOTOS.length],
+        terrain: getTerrain(t),
+        type: getType(diff),
+        lat: mid.lat, lng: mid.lon,
+        tags: getTags(t, diff),
+        emoji: getEmoji(diff),
+        nature: 7,
+        effort: diff==='easy' ? 3 : diff==='medium' ? 5 : 7,
+        fun: 7,
+        desc: t.name ? `Piste cyclable "${t.name}".` : 'Chemin cyclable OpenStreetMap.',
+        source: 'osm',
+        geom: geomLL
       });
+      if (osmRoutes.length >= 25) return;
     });
   }
 
@@ -1223,6 +1383,17 @@ function processOSM(els) {
 
   applyFilters();
   toast(`✅ ${osmRoutes.length} parcours trouvés !`);
+}
+
+// Extrait la géométrie complète d'une relation en array [lat,lng]
+function extractRelationGeom(rel) {
+  if (!rel.members) return null;
+  const ll = [];
+  for (const m of rel.members) {
+    if (m.type !== 'way' || !m.geometry) continue;
+    for (const p of m.geometry) ll.push([p.lat, p.lon]);
+  }
+  return ll.length >= 2 ? ll : null;
 }
 
 const SAMPLES = [
@@ -1244,6 +1415,33 @@ function applyFilters() {
   const filtered = filterRoutes(osmRoutes);
   renderRoutes(filtered);
   showMarkers(filtered);
+  drawTopRoutes(filtered);
+}
+
+// Dessine les 10 premiers parcours directement sur la carte (polylignes colorées)
+function drawTopRoutes(routes) {
+  // Nettoyer les anciens tracés de liste (pas les tracés détaillés cliqués)
+  polys.filter(p => p._isListPreview).forEach(p => map.removeLayer(p));
+  polys = polys.filter(p => !p._isListPreview);
+
+  const colors = { easy:'#2d6b20', medium:'#b86800', hard:'#c0392b' };
+  const top = routes.filter(r => r.geom && r.geom.length >= 2).slice(0, 10);
+
+  top.forEach(r => {
+    const poly = L.polyline(r.geom, {
+      color: colors[r.diff] || '#2d4a22',
+      weight: 3.5,
+      opacity: 0.65,
+      smoothFactor: 2
+    });
+    poly._isListPreview = true;
+    poly._rid = r.id;
+    poly.on('click', () => openModal(r.id));
+    poly.on('mouseover', () => { poly.setStyle({ weight: 5.5, opacity: 1 }); hiCard(r.id, 1); });
+    poly.on('mouseout',  () => { poly.setStyle({ weight: 3.5, opacity: 0.65 }); hiCard(r.id, 0); });
+    poly.addTo(map);
+    polys.push(poly);
+  });
 }
 
 function filterRoutes(routes) {
@@ -1322,6 +1520,12 @@ function hiCard(id, on) {
   const m = markers.find(m => m._rid === id);
   const r = getAllRoutes().find(r => r.id === id);
   if (m && r) m.setIcon(makeMarker(r, on));
+  // Mettre aussi en surbrillance le tracé sur la carte s'il existe
+  const poly = polys.find(p => p._rid === id && p._isListPreview);
+  if (poly) {
+    poly.setStyle(on ? { weight: 5.5, opacity: 1 } : { weight: 3.5, opacity: 0.65 });
+    if (on) poly.bringToFront();
+  }
   document.getElementById(`rc-${id}`)?.classList.toggle('active', on);
 }
 function flyToR(id) {
@@ -1543,13 +1747,16 @@ function switchTab(tab) {
   if (tab==='plan') {
     document.getElementById('mapHint').style.display = 'block';
     clearMarkers();
+    document.getElementById('searchArea')?.classList.remove('visible');
   } else {
     document.getElementById('mapHint').style.display = 'none';
     if (planPoly) { map.removeLayer(planPoly); planPoly=null; }
     if (planMarker) { map.removeLayer(planMarker); planMarker=null; }
     planLL=null;
     document.getElementById('planResult').style.display='none';
-    if (osmRoutes.length) { showMarkers(filterRoutes(osmRoutes)); }
+    if (osmRoutes.length) { showMarkers(filterRoutes(osmRoutes)); drawTopRoutes(filterRoutes(osmRoutes)); }
+    // Réévaluer l'affichage du bouton de recherche
+    setTimeout(() => { const b=document.getElementById('searchArea'); if(b && map.getZoom()>=10 && !osmRoutes.length) b.classList.add('visible'); }, 100);
   }
 }
 
@@ -1626,7 +1833,7 @@ function closeSheet() {
 
 // ── PWA ──
 if ('serviceWorker' in navigator) {
-  const sw = `self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(clients.claim()));self.addEventListener('fetch',e=>{if(e.request.url.includes('stadiamaps')||e.request.url.includes('openstreetmap')){e.respondWith(caches.open('tiles-v1').then(c=>c.match(e.request).then(r=>r||fetch(e.request).then(res=>{c.put(e.request,res.clone());return res;}))))}});`;
+  const sw = `self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(clients.claim()));self.addEventListener('fetch',e=>{if(e.request.url.includes('tile-cyclosm')||e.request.url.includes('openstreetmap')){e.respondWith(caches.open('tiles-v1').then(c=>c.match(e.request).then(r=>r||fetch(e.request).then(res=>{c.put(e.request,res.clone());return res;}))))}});`;
   navigator.serviceWorker.register(URL.createObjectURL(new Blob([sw],{type:'application/javascript'}))).catch(()=>{});
 }
 
