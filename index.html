@@ -1196,45 +1196,104 @@ function setPlanStart(lat, lng, label='') {
 }
 
 // ── OVERPASS ──
+// Liste des serveurs Overpass (essayés dans l'ordre, fallback automatique)
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter'
+];
+
+// Essaye une requête Overpass sur plusieurs serveurs avec fallback
+async function overpassFetch(query) {
+  let lastErr = null;
+  for (const url of OVERPASS_ENDPOINTS) {
+    try {
+      const ctrl = new AbortController();
+      const timeoutId = setTimeout(() => ctrl.abort(), 28000);
+      const res = await fetch(url, {
+        method: 'POST',
+        body: `data=${encodeURIComponent(query)}`,
+        signal: ctrl.signal
+      });
+      clearTimeout(timeoutId);
+      if (!res.ok) { lastErr = new Error(`${url} → HTTP ${res.status}`); continue; }
+      return await res.json();
+    } catch (e) {
+      lastErr = e;
+      console.log('Overpass fail:', url, e.message);
+    }
+  }
+  throw lastErr || new Error('Tous les serveurs Overpass ont échoué');
+}
+
 async function searchRoutes() {
   const btn = document.getElementById('searchBtn');
   btn.disabled = true; btn.textContent = '⏳ Recherche…';
+  const floatBtn = document.getElementById('searchArea');
+  if (floatBtn) { floatBtn.classList.add('loading'); floatBtn.textContent = '⏳ Recherche en cours…'; }
   showLoader('Interrogation OpenStreetMap…');
 
   const b = map.getBounds();
   // Élargir légèrement la bounding box pour attraper les parcours qui débordent
-  const pad = 0.15;
+  const pad = 0.1;
   const south = b.getSouth() - (b.getNorth()-b.getSouth())*pad;
   const north = b.getNorth() + (b.getNorth()-b.getSouth())*pad;
   const west  = b.getWest()  - (b.getEast()-b.getWest())*pad;
   const east  = b.getEast()  + (b.getEast()-b.getWest())*pad;
   const bb = `${south},${west},${north},${east}`;
 
-  // Requête élargie : on capture TOUS les types de réseaux cyclables
-  // + relations route=bicycle / route=mtb
-  // + ways cycleway / path avec bicycle=yes
-  const q = `[out:json][timeout:30];
+  // Requête ÉTAPE 1 : les relations d'itinéraires (beaucoup plus léger, rapide)
+  const qRelations = `[out:json][timeout:20];
     (
       relation["route"~"^(bicycle|mtb)$"](${bb});
       relation["network"~"^(icn|ncn|rcn|lcn)$"](${bb});
-      way["highway"="cycleway"](${bb});
-      way["highway"="path"]["bicycle"~"^(yes|designated)$"](${bb});
-      way["highway"="track"]["bicycle"~"^(yes|designated)$"](${bb});
     );
-    out body geom 150;`;
+    out body geom 80;`;
 
   try {
-    const res = await fetch('https://overpass-api.de/api/interpreter', { method:'POST', body:`data=${encodeURIComponent(q)}` });
-    const data = await res.json();
-    hideLoader();
-    processOSM(data.elements);
-    if (window._markSearched) window._markSearched();
+    const data = await overpassFetch(qRelations);
+    const rels = data.elements.filter(e => e.type === 'relation');
+
+    // Si on a trouvé assez de relations, c'est bon — on s'arrête là
+    if (rels.length >= 5) {
+      hideLoader();
+      processOSM(data.elements);
+      if (window._markSearched) window._markSearched();
+    } else {
+      // ÉTAPE 2 : compléter avec des ways cyclables (requête séparée, plus rapide)
+      const qWays = `[out:json][timeout:20];
+        (
+          way["highway"="cycleway"](${bb});
+          way["highway"~"^(path|track)$"]["bicycle"~"^(yes|designated)$"](${bb});
+        );
+        out body geom 60;`;
+      try {
+        const data2 = await overpassFetch(qWays);
+        hideLoader();
+        processOSM([...data.elements, ...data2.elements]);
+        if (window._markSearched) window._markSearched();
+      } catch(e) {
+        // Même si la 2ème requête échoue, on affiche les relations qu'on a
+        hideLoader();
+        if (rels.length) {
+          processOSM(data.elements);
+          if (window._markSearched) window._markSearched();
+        } else {
+          throw e;
+        }
+      }
+    }
   } catch(e) {
     hideLoader();
-    toast('⚠️ Overpass indisponible — données de démonstration');
+    const msg = e.name === 'AbortError' ? '⏱️ Serveur trop lent — réessaie dans un instant'
+              : String(e).includes('504') ? '⚠️ Serveurs OSM saturés — réessaie dans 1 min'
+              : String(e).includes('429') ? '⚠️ Trop de requêtes — patiente 30s'
+              : '⚠️ Overpass indisponible — données de démonstration';
+    toast(msg);
     loadSamples();
   }
   btn.disabled = false; btn.textContent = '🔍 Chercher des parcours';
+  if (floatBtn) { floatBtn.classList.remove('loading'); floatBtn.textContent = '🔍 Rechercher dans cette zone'; }
 }
 
 // Calcule la distance d'une relation à partir de sa géométrie (en km)
@@ -1541,24 +1600,41 @@ function getAllRoutes() { return [...osmRoutes, ...SAMPLES]; }
 // ── OSM GEOMETRY ──
 async function loadOSMGeom(id) {
   const r = osmRoutes.find(r => r.id === id);
-  if (!r?.osmId) return;
+  if (!r) return;
+
+  const colors = { easy:'#2d6b20', medium:'#b86800', hard:'#c0392b' };
+
+  // Cas 1 : on a déjà la géométrie en cache (la plupart du temps grâce à processOSM)
+  if (r.geom && r.geom.length >= 2) {
+    // Retirer les previews de liste pour mettre en valeur celui-ci
+    polys.filter(p => p._isListPreview).forEach(p => map.removeLayer(p));
+    polys = polys.filter(p => !p._isListPreview);
+
+    const poly = L.polyline(r.geom, { color: colors[r.diff]||'#2d4a22', weight:4, opacity:0.9, smoothFactor:1.5 }).addTo(map);
+    polys.push(poly);
+    map.fitBounds(poly.getBounds(), {padding:[40,40]});
+    elevData = r.geom.map((_,i) => Math.round(80 + 40*Math.sin(i/r.geom.length*Math.PI*5) + Math.random()*20));
+    showElev(r.name);
+    return;
+  }
+
+  // Cas 2 : pas de géométrie en cache, on la demande à Overpass (avec fallback multi-serveurs)
+  if (!r.osmId) { toast('Géométrie non disponible'); return; }
   showLoader('Chargement du tracé…');
   try {
-    const q = `[out:json];relation(${r.osmId});way(r);node(w);out body;`;
-    const res = await fetch('https://overpass-api.de/api/interpreter', { method:'POST', body:`data=${encodeURIComponent(q)}` });
-    const d = await res.json();
+    const q = `[out:json][timeout:20];relation(${r.osmId});way(r);node(w);out body;`;
+    const d = await overpassFetch(q);
     hideLoader();
     const ns = {}; d.elements.filter(e=>e.type==='node').forEach(n => ns[n.id]={lat:n.lat,lng:n.lon});
     const ws = d.elements.filter(e=>e.type==='way');
     if (!ws.length) { toast('Géométrie non disponible'); return; }
     const ll = []; ws.forEach(w => w.nodes.forEach(nid => { if(ns[nid]) ll.push([ns[nid].lat, ns[nid].lng]); }));
     if (ll.length < 2) { toast('Tracé insuffisant'); return; }
-    const colors = { easy:'#2d6b20', medium:'#b86800', hard:'#c0392b' };
     const poly = L.polyline(ll, { color: colors[r.diff]||'#2d4a22', weight:4, opacity:0.85, smoothFactor:1.5 }).addTo(map);
     polys.push(poly); map.fitBounds(poly.getBounds(), {padding:[40,40]});
     elevData = ll.map((_,i) => Math.round(80 + 40*Math.sin(i/ll.length*Math.PI*5) + Math.random()*20));
     showElev(r.name); toast('✅ Tracé chargé !');
-  } catch(e) { hideLoader(); toast('⚠️ Erreur tracé'); }
+  } catch(e) { hideLoader(); toast('⚠️ Serveurs OSM saturés — réessaie plus tard'); }
 }
 
 // ── GENERATE ROUTE ──
